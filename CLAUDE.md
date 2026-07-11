@@ -6,6 +6,15 @@ Cíl: bot pro NQ futures sledující tick data a orderflow. Postup po fázích v
 - `bot/` — hlavní balíček, `scripts/` — jednorázové skripty, `tests/`, `notebooks/`
 - Poznámka: backtesting.py se pro tick/orderflow strategie nehodí (je na OHLCV) — backtester píšeme vlastní, event-driven.
 
+## Pravidla deníku (Obsidian: ~/Documents/Obsidian Vault/MyVault/Trading/)
+- Do deníku ukládej POUZE: rozhodnutí o strategii a jejich zdůvodnění, výsledky backtestů (parametry, období, výnos, drawdown), poznatky a překvapení, co zbývá dodělat.
+- NEUKLÁDEJ: instalace softwaru a knihoven, řešení technických chyb a překlepů, rutinní úpravy kódu bez dopadu na strategii.
+- Po každém významném poznatku aktualizuj `Strategie-aktualni-stav.md` — zastaralé informace přepiš, nepřidávej donekonečna.
+- Technické detaily prostředí (verze, knihovny) patří sem do CLAUDE.md, ne do deníku.
+
+## Bezpečnost
+- NIKDY nespouštěj kód, který odesílá reálné objednávky brokerovi, bez výslovného potvrzení uživatele v daném sezení.
+
 ## Prostředí
 - Python 3.14.6 (Homebrew, `/opt/homebrew/bin/python3`)
 - Virtuální prostředí: `.venv/` (aktivace: `source .venv/bin/activate`)
