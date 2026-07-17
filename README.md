@@ -19,3 +19,4 @@ source .venv/bin/activate
 2. Replay engine — přehrávání historických ticků jako simulace živého trhu
 3. Vývoj a backtest strategie nad orderflow
 4. Live napojení (feed + exekuce) — až po ověření na historii
+# tradingbot
