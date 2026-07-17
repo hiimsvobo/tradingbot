@@ -14,12 +14,18 @@
 // slévají sweepy -> absorb filtr je přísnější (podmínka NEpřítomnosti
 // absorpce), spíš méně obchodů — ověřit v replay.
 //
+// SIGNÁLY Z NQ, VSTUPY NA MNQ: strategie čte ticky NQ (tam je objem a
+// orderflow), ale objednávky posílá na MNQ sérii (parametr MnqInstrument —
+// MUSÍ odpovídat aktuálnímu kontraktu, např. "MNQ 09-26"). Počet mikr =
+// floor(RiskUsd / (risk_b * $2)), min 1, strop MaxMicros. Ceny NQ a MNQ jsou
+// prakticky identické (stejný index, arbitráž), stopy/targety z NQ cen platí.
+//
 // Nastavení grafu: NQ (aktuální kontrakt), libovolný časový rámec (bary grafu
 // se nepoužívají, jen ticky), session template "CME US Index Futures RTH".
 // Calculate = OnEachTick.
 //
 // Parametry odpovídají tick validaci 17. 7. 2026: risk >= 60 b, TP 3R,
-// WR 58 %, net $61,8k/rok na 1x NQ (sizing pro eval: MNQ dle risku $500).
+// fixní risk $500 na MNQ: net $11,6k/rok, maxDD $2,0k, 1–4 mikra (medián 3).
 
 #region Using declarations
 using System;
@@ -35,28 +41,34 @@ namespace NinjaTrader.NinjaScript.Strategies
     public class IvbBreakout : Strategy
     {
         // === parametry ===
-        [NinjaScriptProperty, Range(1, 20), Display(Name = "Contracts", Order = 1)]
-        public int Contracts { get; set; }
+        [NinjaScriptProperty, Display(Name = "MnqInstrument (aktuální kontrakt!)", Order = 0)]
+        public string MnqInstrument { get; set; }
 
-        [NinjaScriptProperty, Range(1, 200), Display(Name = "MinRiskPts (min range svíčky, b)", Order = 2)]
+        [NinjaScriptProperty, Range(50, 5000), Display(Name = "RiskUsd (fixní risk na obchod)", Order = 1)]
+        public double RiskUsd { get; set; }
+
+        [NinjaScriptProperty, Range(1, 50), Display(Name = "MaxMicros (strop počtu mikr)", Order = 2)]
+        public int MaxMicros { get; set; }
+
+        [NinjaScriptProperty, Range(1, 200), Display(Name = "MinRiskPts (min range svíčky, b)", Order = 3)]
         public double MinRiskPts { get; set; }
 
-        [NinjaScriptProperty, Range(0.5, 10), Display(Name = "Rrr", Order = 3)]
+        [NinjaScriptProperty, Range(0.5, 10), Display(Name = "Rrr", Order = 4)]
         public double Rrr { get; set; }
 
-        [NinjaScriptProperty, Range(1, 5), Display(Name = "VolMult (x prům. 6 barů)", Order = 4)]
+        [NinjaScriptProperty, Range(1, 5), Display(Name = "VolMult (x prům. 6 barů)", Order = 5)]
         public double VolMult { get; set; }
 
-        [NinjaScriptProperty, Range(0, 1), Display(Name = "WickMax (podíl range)", Order = 5)]
+        [NinjaScriptProperty, Range(0, 1), Display(Name = "WickMax (podíl range)", Order = 6)]
         public double WickMax { get; set; }
 
-        [NinjaScriptProperty, Range(1, 1000), Display(Name = "BigSweep (ks)", Order = 6)]
+        [NinjaScriptProperty, Range(1, 1000), Display(Name = "BigSweep (ks)", Order = 7)]
         public int BigSweep { get; set; }
 
-        [NinjaScriptProperty, Range(0, 5000), Display(Name = "AbsorbMax (ks proti v krajní 1/4)", Order = 7)]
+        [NinjaScriptProperty, Range(0, 5000), Display(Name = "AbsorbMax (ks proti v krajní 1/4)", Order = 8)]
         public int AbsorbMax { get; set; }
 
-        [NinjaScriptProperty, Range(5, 300), Display(Name = "CataPts (pojistný burzovní stop, b za normálním)", Order = 8)]
+        [NinjaScriptProperty, Range(5, 300), Display(Name = "CataPts (pojistný burzovní stop, b za normálním)", Order = 9)]
         public double CataPts { get; set; }
 
         // === interní typy ===
@@ -70,6 +82,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // === stav ===
+        private const int MnqBip = 2;        // index MNQ série (0 graf, 1 NQ ticky)
+        private const double MnqPointValue = 2.0;
         private double ibHi = double.MinValue, ibLo = double.MaxValue;
         private bool ibValid;
         private Bar5 cur;
@@ -108,7 +122,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds = 300;
 
-                Contracts = 1;
+                MnqInstrument = "MNQ 09-26";
+                RiskUsd = 500;
+                MaxMicros = 10;
                 MinRiskPts = 60;
                 Rrr = 3.0;
                 VolMult = 1.2;
@@ -119,8 +135,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (State == State.Configure)
             {
-                // ticky pro stavbu barů (primární série je jen nosič)
+                // ticky NQ pro stavbu barů (primární série je jen nosič) — index 1
                 AddDataSeries(BarsPeriodType.Tick, 1);
+                // MNQ pro exekuci — index 2 (MnqBip)
+                AddDataSeries(MnqInstrument, BarsPeriodType.Minute, 1);
             }
             else if (State == State.DataLoaded)
             {
@@ -131,6 +149,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnMarketData(MarketDataEventArgs e)
         {
             if (e.MarketDataType != MarketDataType.Last)
+                return;
+            // bary se staví JEN z NQ ticků — MNQ data ignorovat (jiný instrument)
+            if (e.Instrument != BarsArray[1].Instrument)
                 return;
 
             DateTime t = e.Time;
@@ -149,11 +170,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 swSize = 0; swLevels.Clear();
             }
 
-            // time-stop otevřené pozice
-            if (Position.MarketPosition != MarketPosition.Flat && tod >= FlatTime)
+            // time-stop otevřené pozice (MNQ)
+            if (Positions[MnqBip].MarketPosition != MarketPosition.Flat && tod >= FlatTime)
             {
-                if (Position.MarketPosition == MarketPosition.Long) ExitLong("TS", sigName);
-                else ExitShort("TS", sigName);
+                if (Positions[MnqBip].MarketPosition == MarketPosition.Long)
+                    ExitLong(MnqBip, 0, "TS", sigName);
+                else
+                    ExitShort(MnqBip, 0, "TS", sigName);
             }
 
             // IB fáze
@@ -220,7 +243,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void OnBar5Close(Bar5 b, TimeSpan tod)
         {
-            if (Position.MarketPosition != MarketPosition.Flat
+            if (Positions[MnqBip].MarketPosition != MarketPosition.Flat
                 || tradedDay == curDay || bars.Count < 6 || tod >= FlatTime)
                 return;
 
@@ -256,6 +279,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (risk < MinRiskPts)
                     continue;
 
+                // sizing: fixní dolarový risk na MNQ ($2/bod)
+                int micros = (int)(RiskUsd / (risk * MnqPointValue));
+                micros = Math.Max(1, Math.Min(MaxMicros, micros));
+
                 tradedDay = curDay;
                 double target = b.Close + d * risk * Rrr;
                 // unikátní signál pro každý obchod (recyklace OCO ID hází chyby)
@@ -264,8 +291,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetStopLoss(sigName, CalculationMode.Price, stop, true);
                 SetProfitTarget(sigName, CalculationMode.Price, target);
                 cataPrice = stop - d * CataPts;
-                if (d == 1) EnterLong(Contracts, sigName);
-                else EnterShort(Contracts, sigName);
+                if (d == 1) EnterLong(MnqBip, micros, sigName);
+                else EnterShort(MnqBip, micros, sigName);
                 return;
             }
         }
@@ -276,10 +303,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnPositionUpdate(Cbi.Position position, double averagePrice,
                                                  int quantity, MarketPosition marketPosition)
         {
+            // reagovat jen na MNQ pozici (NQ se neobchoduje)
+            if (position.Instrument != BarsArray[MnqBip].Instrument)
+                return;
             if (marketPosition == MarketPosition.Long)
-                ExitLongStopMarket(0, true, quantity, cataPrice, "Cata", sigName);
+                ExitLongStopMarket(MnqBip, true, quantity, cataPrice, "Cata", sigName);
             else if (marketPosition == MarketPosition.Short)
-                ExitShortStopMarket(0, true, quantity, cataPrice, "Cata", sigName);
+                ExitShortStopMarket(MnqBip, true, quantity, cataPrice, "Cata", sigName);
         }
 
         protected override void OnBarUpdate() { /* logika běží v OnMarketData */ }
