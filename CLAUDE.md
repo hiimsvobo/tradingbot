@@ -10,6 +10,7 @@ Cíl: bot pro NQ futures sledující tick data a orderflow. Postup po fázích v
 - Do deníku ukládej POUZE: rozhodnutí o strategii a jejich zdůvodnění, výsledky backtestů (parametry, období, výnos, drawdown), poznatky a překvapení, co zbývá dodělat.
 - NEUKLÁDEJ: instalace softwaru a knihoven, řešení technických chyb a překlepů, rutinní úpravy kódu bez dopadu na strategii.
 - Po každém významném poznatku aktualizuj `Strategie-aktualni-stav.md` — zastaralé informace přepiš, nepřidávej donekonečna.
+- Každá strategie má vlastní soubor `Strategie-<nazev>.md` s kompletním kontextem (definice, parametry, výsledky, zákazy, infrastruktura, kde pokračovat) — udržuj ho aktuální, při zahájení nové strategie ho založ. `Strategie-aktualni-stav.md` je jen stručný přehled + průřezové poznatky.
 - Technické detaily prostředí (verze, knihovny) patří sem do CLAUDE.md, ne do deníku.
 
 ## Bezpečnost

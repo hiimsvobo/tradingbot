@@ -24,9 +24,11 @@ class Trade:
     direction: int  # +1 long, -1 short
     entry_price: float
     exit_price: float
+    size: int = 1   # počet kontraktů
 
     @property
     def points(self) -> float:
+        """Body na 1 kontrakt (bez velikosti pozice)."""
         return (self.exit_price - self.entry_price) * self.direction
 
 
@@ -43,6 +45,8 @@ class Broker:
         self.entry_ts = None
         self._pending = 0  # požadovaná pozice, čeká na další tick
         self._has_pending = False
+        self._stop: float | None = None    # stop-market exit
+        self._target: float | None = None  # limit exit
         self.trades: list[Trade] = []
         self.last_price = float("nan")
 
@@ -52,22 +56,45 @@ class Broker:
         self._pending = target
         self._has_pending = True
 
+    def set_bracket(self, stop: float | None, target: float | None) -> None:
+        """Exitní příkazy k aktuální/vstupující pozici: stop-market na stop,
+        limitka na target. Target se plní NA ceně targetu, jakmile se na ní
+        zobchoduje (bez skluzu; reálně nese riziko fronty v orderbooku).
+        Stop se plní za cenu ticku + skluz. Při zásahu obou v jednom ticku
+        má přednost stop. Bracket se ruší s uzavřením pozice.
+        """
+        self._stop = stop
+        self._target = target
+
     # --- volá engine ---
     def process_tick(self, tick: Tick) -> None:
+        if self.position != 0 and not self._has_pending:
+            p, pos = tick.price, self.position
+            hit_stop = (self._stop is not None
+                        and (p <= self._stop if pos > 0 else p >= self._stop))
+            hit_target = (self._target is not None
+                          and (p >= self._target if pos > 0 else p <= self._target))
+            if hit_stop:
+                self._fill(tick, 0)
+            elif hit_target:
+                self._fill(tick, 0, price=self._target)
         if self._has_pending and self._pending != self.position:
             self._fill(tick, self._pending)
         self._has_pending = False
         self.last_price = tick.price
 
-    def _fill(self, tick: Tick, target: int) -> None:
+    def _fill(self, tick: Tick, target: int, price: float | None = None) -> None:
         delta = target - self.position
-        fill_price = tick.price + self.slippage * (1 if delta > 0 else -1)
+        fill_price = price if price is not None else (
+            tick.price + self.slippage * (1 if delta > 0 else -1))
         if self.position != 0:  # zavření (i otočka) staré pozice
             self.trades.append(Trade(self.entry_ts, tick.ts, 1 if self.position > 0 else -1,
-                                     self.entry_price, fill_price))
+                                     self.entry_price, fill_price, abs(self.position)))
         if target != 0:
             self.entry_price = fill_price
             self.entry_ts = tick.ts
+        else:
+            self._stop = self._target = None
         self.position = target
 
     def finish(self, tick: Tick) -> None:
@@ -77,10 +104,10 @@ class Broker:
 
     # --- výsledky ---
     def results(self) -> dict:
-        pts = [t.points for t in self.trades]
-        gross = sum(pts) * POINT_VALUE
-        fees = len(self.trades) * 2 * self.commission
-        pnl_per_trade = [t.points * POINT_VALUE - 2 * self.commission for t in self.trades]
+        gross = sum(t.points * t.size for t in self.trades) * POINT_VALUE
+        fees = sum(2 * self.commission * t.size for t in self.trades)
+        pnl_per_trade = [t.points * t.size * POINT_VALUE - 2 * self.commission * t.size
+                         for t in self.trades]
         equity = pd.Series(pnl_per_trade).cumsum()
         max_dd = float((equity.cummax() - equity).max()) if len(equity) else 0.0
         wins = sum(1 for p in pnl_per_trade if p > 0)
